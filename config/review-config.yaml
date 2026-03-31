@@ -1,0 +1,25 @@
+# Code Review Bot Configuration
+# Add repos to monitor below, OR set an org to monitor all repos in that org.
+
+repos:
+  # - owner/repo-name
+  # - another-owner/another-repo
+
+# Monitor all repos in an org (comment out `repos` list above when using this):
+# org: launchapp-dev
+
+# Filtering options
+exclude_repos: []
+exclude_authors:
+  - "dependabot[bot]"
+  - "renovate[bot]"
+  - "github-actions[bot]"
+
+min_files_changed: 1
+max_files_changed: 100    # Skip mega-PRs (likely auto-generated)
+
+pr_states:
+  - open
+
+skip_draft: true
+skip_already_reviewed: true   # Uses head SHA comparison to detect re-review after force-push

@@ -1,0 +1,41 @@
+# Style and code quality rules for the code review bot
+
+thresholds:
+  max_function_lines: 50          # Flag functions longer than this
+  max_nesting_depth: 4            # Flag code nested deeper than this
+  max_parameters: 5               # Flag functions with more parameters than this
+  max_file_lines: 500             # Flag files exceeding this line count after change
+  max_pr_files: 50                # Warn when PR touches more than this many files
+
+checks:
+  # Test coverage expectations
+  require_tests_for_new_files: true     # New source files should have test counterparts
+  require_test_updates_for_modified: true  # Modified files should update their tests
+
+  # Documentation expectations
+  require_docs_for_public_api: true     # Exported functions need docstrings
+  require_changelog_for_breaking: true  # Breaking changes need CHANGELOG entries
+
+  # Code smell detection
+  flag_console_log: true                # console.log / print left in production code
+  flag_commented_code: true             # Blocks of commented-out code
+  flag_todo_fixme: true                 # TODO/FIXME comments in new code
+  flag_magic_numbers: false             # Numeric literals without named constants (noisy)
+
+naming:
+  # Language-specific conventions (agent infers language from file extension)
+  typescript:
+    variables: camelCase
+    functions: camelCase
+    classes: PascalCase
+    constants: UPPER_SNAKE_CASE
+    files: kebab-case
+  python:
+    variables: snake_case
+    functions: snake_case
+    classes: PascalCase
+    constants: UPPER_SNAKE_CASE
+    files: snake_case
+  go:
+    exported: PascalCase
+    unexported: camelCase

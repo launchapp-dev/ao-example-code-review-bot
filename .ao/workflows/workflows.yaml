@@ -1,0 +1,35 @@
+default_workflow_ref: review-prs
+
+workflows:
+  - id: review-prs
+    name: "Automated PR Review Pipeline"
+    description: "Poll for new open PRs, run multi-agent analysis (diff, security, style), compose and post structured GitHub reviews"
+    phases:
+      - discover-prs
+      - fetch-diffs
+      - analyze-diff
+      - scan-security
+      - check-style
+      - compose-review:
+          on_verdict:
+            rework:
+              target: scan-security
+            fail:
+              target: discover-prs
+          max_rework_attempts: 2
+      - post-reviews
+    post_success:
+      notify: true
+
+  - id: review-single
+    name: "Single PR Review (On-Demand)"
+    description: "Review a specific PR immediately — pass repo#number as the task description"
+    phases:
+      - fetch-single
+      - full-review:
+          on_verdict:
+            rework:
+              target: fetch-single
+            fail:
+              target: fetch-single
+          max_rework_attempts: 1

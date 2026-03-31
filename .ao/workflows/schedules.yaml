@@ -1,0 +1,6 @@
+schedules:
+  - id: review-poll
+    cron: "*/15 * * * *"
+    workflow_ref: review-prs
+    enabled: true
+    description: "Poll for new open PRs every 15 minutes and post automated reviews"

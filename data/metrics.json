@@ -1,0 +1,11 @@
+{
+  "total_reviewed": 0,
+  "approvals": 0,
+  "request_changes": 0,
+  "comment_only": 0,
+  "critical_findings": 0,
+  "warning_findings": 0,
+  "info_findings": 0,
+  "repos_monitored": 0,
+  "last_run_at": null
+}

@@ -1,0 +1,379 @@
+phases:
+  # ─── review-prs workflow phases ───────────────────────────────────────────
+
+  discover-prs:
+    mode: command
+    capabilities:
+      mutates_state: true
+      writes_files: true
+    command:
+      program: bash
+      args:
+        - "-c"
+        - |
+          set -euo pipefail
+          CONFIG=config/review-config.yaml
+          LOG=data/review-log.json
+          OUT=data/pending-reviews.json
+
+          mkdir -p data/diffs data/analysis data/security data/style output/reviews
+
+          # Initialize files if missing
+          [ -f "$LOG" ] || echo '[]' > "$LOG"
+          [ -f "data/metrics.json" ] || echo '{"total_reviewed":0,"approvals":0,"request_changes":0,"comment_only":0,"critical_findings":0,"warning_findings":0}' > data/metrics.json
+
+          echo '[]' > "$OUT"
+
+          # Read repos from config (simple YAML parse with grep/sed)
+          REPOS=$(grep -E '^\s*- ' "$CONFIG" | grep -v '^  - ' | sed 's/.*- //' | tr -d '"' || true)
+          ORG=$(grep '^org:' "$CONFIG" | awk '{print $2}' | tr -d '"' || true)
+
+          if [ -n "$ORG" ]; then
+            REPOS=$(gh repo list "$ORG" --json name --jq '.[].name' 2>/dev/null | head -20 | sed "s|^|$ORG/|" || true)
+          fi
+
+          if [ -z "$REPOS" ]; then
+            echo "No repos configured. Check config/review-config.yaml."
+            echo '[]' > "$OUT"
+            exit 0
+          fi
+
+          # Fetch already-reviewed head SHAs to avoid duplicates
+          REVIEWED=$(python3 -c "
+          import json, sys
+          try:
+            log = json.load(open('$LOG'))
+            keys = {str(e['repo']) + '#' + str(e['pr_number']) + '@' + str(e.get('head_sha','')) for e in log}
+            print(json.dumps(list(keys)))
+          except: print('[]')
+          ")
+
+          PENDING='[]'
+          for REPO in $REPOS; do
+            echo "Checking $REPO for open PRs..."
+            PR_DATA=$(gh pr list -R "$REPO" --state open --json number,title,author,createdAt,headRefOid,baseRefName,isDraft,labels \
+              --limit 50 2>/dev/null || echo '[]')
+
+            PENDING=$(python3 -c "
+          import json, sys
+          pending = $PENDING
+          new = json.loads('''$PR_DATA''')
+          reviewed = set($REVIEWED)
+          for pr in new:
+            if pr.get('isDraft', False):
+              continue
+            key = '$REPO#' + str(pr['number']) + '@' + pr.get('headRefOid','')
+            if key not in reviewed:
+              pending.append({
+                'repo': '$REPO',
+                'pr_number': pr['number'],
+                'title': pr['title'],
+                'author': pr['author']['login'] if pr.get('author') else 'unknown',
+                'created_at': pr.get('createdAt',''),
+                'head_sha': pr.get('headRefOid',''),
+                'base_branch': pr.get('baseRefName','main')
+              })
+          print(json.dumps(pending))
+          " 2>/dev/null || echo "$PENDING")
+          done
+
+          echo "$PENDING" > "$OUT"
+          COUNT=$(python3 -c "import json; print(len(json.load(open('$OUT'))))")
+          echo "Found $COUNT PRs pending review."
+      cwd_mode: project_root
+      timeout_secs: 120
+
+  fetch-diffs:
+    mode: command
+    capabilities:
+      mutates_state: true
+      writes_files: true
+    command:
+      program: bash
+      args: ["-c", "bash scripts/fetch-diffs.sh"]
+      cwd_mode: project_root
+      timeout_secs: 300
+
+  analyze-diff:
+    mode: agent
+    agent: diff-analyzer
+    directive: |
+      Read data/pending-reviews.json to get the list of PRs awaiting review.
+
+      For each PR entry, read its raw diff from data/diffs/{repo}--{pr_number}.json
+      where repo uses underscores replacing slashes (e.g., owner__repo--42.json).
+
+      Produce a structured analysis file at data/analysis/{repo}--{pr_number}.json
+      with this exact schema:
+      {
+        "repo": "owner/repo",
+        "pr_number": 42,
+        "head_sha": "abc123",
+        "scope_summary": "One sentence describing what this PR does",
+        "complexity_estimate": "low|medium|high",
+        "review_priority": "critical|normal|low",
+        "files_changed": [
+          {
+            "path": "src/auth/login.ts",
+            "language": "typescript",
+            "change_type": "modified",
+            "lines_added": 45,
+            "lines_deleted": 12
+          }
+        ],
+        "functions_modified": [
+          {
+            "name": "validateUser",
+            "file": "src/auth/login.ts",
+            "change_summary": "Added email verification step"
+          }
+        ],
+        "sensitive_file_paths": ["src/auth/", "config/", "migrations/"],
+        "analyzed_at": "ISO8601 timestamp"
+      }
+
+      If a PR diff file is missing or empty, write an entry with an "error" field
+      and continue to the next PR. Process all pending PRs.
+    capabilities:
+      mutates_state: true
+      writes_files: true
+
+  scan-security:
+    mode: agent
+    agent: security-scanner
+    directive: |
+      Read data/pending-reviews.json for the list of PRs to scan.
+
+      For each PR, read:
+      - data/diffs/{repo}--{pr_number}.json (the raw diff content)
+      - data/analysis/{repo}--{pr_number}.json (scope and file context)
+      - config/security-rules.yaml (patterns to match)
+
+      Perform a thorough security scan looking for:
+      - Hardcoded secrets, API keys, passwords (use regex patterns from security-rules.yaml)
+      - SQL injection, command injection, XSS patterns in new/changed code lines (+lines in diff)
+      - Missing auth/permission checks on new routes or functions
+      - New unvetted dependencies
+      - PII or sensitive data in logs or API responses
+
+      Use sequential-thinking MCP to reason through complex multi-file issues where
+      a vulnerability chain spans multiple changed files.
+
+      Write findings to data/security/{repo}--{pr_number}.json:
+      {
+        "repo": "owner/repo",
+        "pr_number": 42,
+        "findings": [
+          {
+            "type": "hardcoded-secret",
+            "severity": "critical",
+            "file": "src/config.ts",
+            "line": 23,
+            "description": "Hardcoded AWS access key detected",
+            "recommendation": "Move to environment variable, rotate the key immediately"
+          }
+        ],
+        "critical_count": 1,
+        "warning_count": 0,
+        "info_count": 0,
+        "scanned_at": "ISO8601 timestamp"
+      }
+
+      If no findings, write an entry with empty findings array and all counts at 0.
+      Focus ONLY on added lines (lines starting with +) in the diff — not removed code.
+    capabilities:
+      mutates_state: true
+      writes_files: true
+
+  check-style:
+    mode: agent
+    agent: style-checker
+    directive: |
+      Read data/pending-reviews.json for the list of PRs to check.
+
+      For each PR, read:
+      - data/diffs/{repo}--{pr_number}.json (the raw diff content)
+      - data/analysis/{repo}--{pr_number}.json (file list and context)
+      - config/style-rules.yaml (thresholds and checks)
+
+      Run style and quality checks based on added/modified code only (+ lines):
+
+      1. NAMING: flag inconsistent conventions, non-descriptive names
+      2. COMPLEXITY: flag functions over max_function_lines lines, deep nesting
+      3. CODE SMELLS: console.log in production files, commented-out code, duplication
+      4. TEST COVERAGE: new source files without test counterparts
+      5. DOCUMENTATION: exported/public APIs without docstrings
+
+      Write findings to data/style/{repo}--{pr_number}.json:
+      {
+        "repo": "owner/repo",
+        "pr_number": 42,
+        "findings": [
+          {
+            "type": "complexity",
+            "severity": "warning",
+            "file": "src/utils/parser.ts",
+            "line": 145,
+            "description": "Function processData is 87 lines (limit: 50)",
+            "suggestion": "Extract validation logic into a separate validateInput() function"
+          }
+        ],
+        "warning_count": 1,
+        "info_count": 0,
+        "suggestion_count": 0,
+        "checked_at": "ISO8601 timestamp"
+      }
+
+      If no findings, write entry with empty findings array and zero counts.
+    capabilities:
+      mutates_state: true
+      writes_files: true
+
+  compose-review:
+    mode: agent
+    agent: review-composer
+    directive: |
+      Read data/pending-reviews.json for the list of PRs to compose reviews for.
+
+      For each PR, synthesize findings from:
+      - data/analysis/{repo}--{pr_number}.json
+      - data/security/{repo}--{pr_number}.json
+      - data/style/{repo}--{pr_number}.json
+      - config/review-templates.yaml (comment templates)
+
+      DETERMINE VERDICT:
+      - "request-changes" if critical_count > 0 in security findings
+      - "comment-only" if warning_count > 0 but no criticals
+      - "approve" if only info/suggestions or completely clean
+
+      COMPOSE THE REVIEW:
+      Write to output/reviews/{repo}--{pr_number}.md:
+
+      ```
+      ## Code Review: {PR Title}
+      **Verdict**: {APPROVE|REQUEST CHANGES|COMMENT}
+      **Reviewed by**: AO Code Review Bot
+
+      ### Summary
+      {scope_summary from analysis}. {Overall assessment sentence.}
+
+      ### Findings
+
+      {For each critical finding:}
+      🔴 **Critical** — {file}:{line}
+      {description}
+      > **Fix**: {recommendation}
+
+      {For each warning:}
+      🟡 **Warning** — {file}:{line}
+      {description}
+      > **Suggestion**: {suggestion}
+
+      {For each info:}
+      🟢 **Info** — {description}
+
+      ### Commendations
+      {Note any good practices, clean code, or improvements made in this PR}
+
+      ---
+      *Automated review by AO Code Review Bot | {timestamp}*
+      ```
+
+      Also write the structured review data to data/composed/{repo}--{pr_number}.json
+      for use by the post-reviews phase.
+
+      Output decision contract JSON as the final line:
+      {"verdict": "approve|request-changes|comment-only", "reasoning": "...", "comment_count": N, "critical_count": N, "warning_count": N, "info_count": N}
+    capabilities:
+      mutates_state: true
+      writes_files: true
+    decision_contract:
+      required_fields: [verdict, reasoning, comment_count, critical_count, warning_count, info_count]
+
+  post-reviews:
+    mode: agent
+    agent: review-composer
+    directive: |
+      Post all composed reviews to GitHub using the gh-cli-mcp tools.
+
+      For each PR in data/pending-reviews.json that has a composed review in
+      data/composed/{repo}--{pr_number}.json:
+
+      1. CHECK DEDUPLICATION:
+         Read data/review-log.json. If this PR's head_sha already has an entry, SKIP it.
+
+      2. POST THE REVIEW via gh-cli-mcp:
+         - Use the verdict from the composed review to choose the right flag:
+           - "approve" → use approve action
+           - "request-changes" → use request-changes action
+           - "comment-only" → use comment action
+         - Body = the full formatted review from output/reviews/{repo}--{pr_number}.md
+         - Post inline comments for findings with specific file:line references
+
+      3. RECORD THE REVIEW:
+         Append to data/review-log.json:
+         {
+           "repo": "owner/repo",
+           "pr_number": 42,
+           "head_sha": "abc123",
+           "verdict": "approve",
+           "comment_count": 3,
+           "critical_count": 0,
+           "warning_count": 2,
+           "posted_at": "ISO8601 timestamp"
+         }
+
+      4. UPDATE METRICS:
+         Increment totals in data/metrics.json:
+         total_reviewed, approvals/request_changes/comment_only, critical_findings, warning_findings
+
+      After all PRs are posted, regenerate output/dashboard.md:
+      - Show metrics summary
+      - List last 10 reviews posted
+      - Show repos monitored
+    capabilities:
+      mutates_state: true
+      writes_files: true
+
+  # ─── review-single workflow phases ────────────────────────────────────────
+
+  fetch-single:
+    mode: command
+    capabilities:
+      mutates_state: true
+      writes_files: true
+    command:
+      program: bash
+      args: ["-c", "bash scripts/fetch-single-pr.sh '{{subject_description}}'"]
+      cwd_mode: project_root
+      timeout_secs: 60
+
+  full-review:
+    mode: agent
+    agent: review-composer
+    directive: |
+      Perform a complete inline code review for the single PR fetched by the
+      fetch-single phase. The PR reference was passed in the task description
+      (format: owner/repo#123).
+
+      Read the diff and metadata from data/diffs/ (there will be exactly one file
+      from this run, the most recently written one).
+
+      Perform ALL analysis inline without separate scanner/style phases:
+      1. Scan for security issues (secrets, injection, auth problems)
+      2. Check style and complexity
+      3. Assess overall code quality
+
+      Compose a comprehensive review using the review-templates.yaml format.
+      Post it to GitHub via gh-cli-mcp.
+
+      Record the review in data/review-log.json and update data/metrics.json.
+      Write the formatted review to output/reviews/{repo}--{pr_number}.md.
+
+      Output decision contract JSON as the final line:
+      {"verdict": "approve|request-changes|comment-only", "reasoning": "...", "comment_count": N, "critical_count": N, "warning_count": N, "info_count": N}
+    capabilities:
+      mutates_state: true
+      writes_files: true
+    decision_contract:
+      required_fields: [verdict, reasoning, comment_count, critical_count, warning_count, info_count]

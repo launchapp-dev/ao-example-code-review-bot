@@ -1,0 +1,72 @@
+# Security scanning rules for the code review bot
+# Patterns are applied to added lines (+) in PR diffs only
+
+patterns:
+  secrets:
+    - pattern: '(api[_-]?key|apikey|secret|token|password|passwd|credential)\s*[:=]\s*[''"][^''"]{8,}'
+      severity: critical
+      description: "Possible hardcoded secret or credential"
+
+    - pattern: '(AKIA[0-9A-Z]{16})'
+      severity: critical
+      description: "AWS Access Key ID pattern detected"
+
+    - pattern: '-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----'
+      severity: critical
+      description: "Private key embedded in source code"
+
+    - pattern: 'ghp_[A-Za-z0-9]{36}'
+      severity: critical
+      description: "GitHub Personal Access Token"
+
+    - pattern: 'sk-[A-Za-z0-9]{48}'
+      severity: critical
+      description: "OpenAI API key pattern"
+
+    - pattern: '(mongodb|postgres|mysql|redis):\/\/[^:]+:[^@]+@'
+      severity: critical
+      description: "Database connection string with credentials"
+
+  injection:
+    - pattern: '\$\{.*\}.*sql|query.*\+.*req\.'
+      severity: warning
+      description: "Potential SQL injection via string concatenation"
+
+    - pattern: 'innerHTML\s*=|dangerouslySetInnerHTML|v-html='
+      severity: warning
+      description: "Potential XSS via raw HTML insertion"
+
+    - pattern: 'exec\(.*req\.|system\(.*req\.|popen\(.*req\.'
+      severity: critical
+      description: "Potential command injection from request data"
+
+    - pattern: 'eval\s*\(.*req\.'
+      severity: critical
+      description: "eval() with request data — code injection risk"
+
+  auth:
+    - pattern: 'TODO.*auth|FIXME.*permission|skip.*auth.*check|bypass.*auth'
+      severity: warning
+      description: "Authentication or authorization TODO/skip comment"
+
+    - pattern: 'req\.user\.id\s*==\s*|user_id.*=.*params\['
+      severity: info
+      description: "Direct object reference — verify ownership check exists"
+
+  dependencies:
+    - pattern: '^[+]\s*"[^"]+"\s*:\s*"\*"'
+      severity: warning
+      description: "Wildcard dependency version — pin to specific version"
+
+    - pattern: '^[+]\s*"[^"]+"\s*:\s*"\^0\.'
+      severity: info
+      description: "Pre-1.0 dependency — API may be unstable"
+
+  data_exposure:
+    - pattern: 'console\.log\(.*password|logger\.(info|debug)\(.*secret|log\(.*token'
+      severity: warning
+      description: "Sensitive data potentially logged"
+
+    - pattern: 'res\.json\(.*password|response\.send\(.*secret'
+      severity: warning
+      description: "Sensitive field possibly included in API response"

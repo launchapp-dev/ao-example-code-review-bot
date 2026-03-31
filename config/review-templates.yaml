@@ -1,0 +1,74 @@
+# Review comment templates
+
+header: |
+  ## 🤖 Automated Code Review
+
+  **Verdict**: {VERDICT_BADGE}
+  **PR**: {pr_title} (`{repo}#{pr_number}`)
+  **Author**: @{author}
+  **Files changed**: {files_changed} | **+{additions}** / **-{deletions}** lines
+
+verdict_badges:
+  approve: "✅ APPROVED"
+  request-changes: "🚫 CHANGES REQUESTED"
+  comment-only: "💬 COMMENTS ONLY"
+
+summary_section: |
+  ### Summary
+  {scope_summary}
+
+  {overall_assessment}
+
+findings_header: |
+  ### Findings ({total_count} total)
+
+finding_templates:
+  critical: |
+    #### 🔴 Critical — `{file}`{LINE_REF}
+    **{description}**
+    > **Required fix**: {recommendation}
+
+  warning: |
+    #### 🟡 Warning — `{file}`{LINE_REF}
+    {description}
+    > **Suggestion**: {suggestion}
+
+  info: |
+    #### 🟢 Info — `{file}`{LINE_REF}
+    {description}
+
+  suggestion: |
+    #### 💡 Suggestion — `{file}`{LINE_REF}
+    {description}
+    > {suggestion}
+
+clean_pr: |
+  ### ✨ Looks Good!
+  No issues found. Clean PR!
+
+commendations_header: "### 👍 Well Done"
+
+footer: |
+  ---
+  *Automated review by [AO Code Review Bot](https://github.com/launchapp-dev/ao-example-code-review-bot) · {timestamp}*
+  *To skip bot review: add label `skip-bot-review` · To re-trigger: push a new commit*
+
+dashboard_template: |
+  # Code Review Bot Dashboard
+  Last updated: {timestamp}
+
+  ## Metrics
+  | Metric | Count |
+  |---|---|
+  | Total PRs Reviewed | {total_reviewed} |
+  | Approved | {approvals} |
+  | Changes Requested | {request_changes} |
+  | Comment Only | {comment_only} |
+  | Critical Findings | {critical_findings} |
+  | Warning Findings | {warning_findings} |
+
+  ## Recent Reviews (Last 10)
+  {recent_reviews_table}
+
+  ## Monitored Repos
+  {repos_list}
